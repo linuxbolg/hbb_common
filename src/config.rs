@@ -99,14 +99,23 @@ const CHARS: &[char] = &[
     '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k',
     'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
 ];
+//这是默认配置，现在进行修改103---113
+//
+// pub const RENDEZVOUS_SERVERS: &[&str] = &["rs-ny.rustdesk.com"];
+// pub const RS_PUB_KEY: &str = "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=";
+// 
+// pub const RENDEZVOUS_PORT: i32 = 21116;
+// pub const RELAY_PORT: i32 = 21117;
+// pub const WS_RENDEZVOUS_PORT: i32 = 21118;
+// pub const WS_RELAY_PORT: i32 = 21119;
+// 
+pub const RENDEZVOUS_SERVERS: &[&str] = &["hbyx.myds.me"];
+pub const RS_PUB_KEY: &str = "sDml1I2V7HwrJg+IlLISdSqYT09fUtA030IJwb8lNps=";
+pub const RENDEZVOUS_PORT: i32 = 2116;
+pub const RELAY_PORT: i32 = 2117;
+pub const WS_RENDEZVOUS_PORT: i32 = 2118;
+pub const WS_RELAY_PORT: i32 = 2119;
 
-pub const RENDEZVOUS_SERVERS: &[&str] = &["rs-ny.rustdesk.com"];
-pub const RS_PUB_KEY: &str = "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=";
-
-pub const RENDEZVOUS_PORT: i32 = 21116;
-pub const RELAY_PORT: i32 = 21117;
-pub const WS_RENDEZVOUS_PORT: i32 = 21118;
-pub const WS_RELAY_PORT: i32 = 21119;
 
 macro_rules! serde_field_string {
     ($default_func:ident, $de_func:ident, $default_expr:expr) => {
