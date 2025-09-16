@@ -523,74 +523,101 @@ pub struct PeerConfig {
 }
 
 
+//🧩 1. 为 PeerConfig提供默认值
+//✅ 作用：为 PeerConfig（控制远程会话的几乎所有功能和 UI 行为）提供​​合理的默认值​​，当用户没有特别配置时，使用这些默认行为。
+//包括：
+//图像质量、窗口大小
+//安全选项（禁用音频、剪贴板、文件传输）
+//功能开关（光标显示、滚轮、多显示器）
+//传输与同步选项
+//键盘、鼠标、UI 行为
 
 impl Default for PeerConfig {
     fn default() -> Self {
         Self {
-            password: Default::default(),
-            size: Default::default(),
-            size_ft: Default::default(),
-            size_pf: Default::default(),
-            view_style: Self::default_view_style(),
-            scroll_style: Self::default_scroll_style(),
-            image_quality: Self::default_image_quality(),
-            custom_image_quality: Self::default_custom_image_quality(),
-            show_remote_cursor: Default::default(),
-            lock_after_session_end: Default::default(),
-            terminal_persistent: Default::default(),
-            privacy_mode: Default::default(),
-            allow_swap_key: Default::default(),
-            port_forwards: Default::default(),
-            direct_failures: Default::default(),
-            disable_audio: Default::default(),
-            disable_clipboard: Default::default(),
-            enable_file_copy_paste: Default::default(),
-            show_quality_monitor: Default::default(),
-            follow_remote_cursor: Default::default(),
-            follow_remote_window: Default::default(),
-            keyboard_mode: Default::default(),
-            view_only: Default::default(),
-            show_my_cursor: Default::default(),
-            reverse_mouse_wheel: Self::default_reverse_mouse_wheel(),
-            displays_as_individual_windows: Self::default_displays_as_individual_windows(),
-            use_all_my_displays_for_the_remote_session:
-                Self::default_use_all_my_displays_for_the_remote_session(),
-            trackpad_speed: Self::default_trackpad_speed(),
-            custom_resolutions: Default::default(),
-            options: Self::default_options(),
-            ui_flutter: Default::default(),
-            info: Default::default(),
-            transfer: Default::default(),
-            sync_init_clipboard: Default::default(),
+            password: Default::default(),                      // 会话密码（字节向量）
+            size: Default::default(),                          // 屏幕尺寸
+            size_ft: Default::default(),                       // 全屏尺寸？
+            size_pf: Default::default(),                       // ？
+            view_style: Self::default_view_style(),            // 视图样式（如窗口装饰风格）
+            scroll_style: Self::default_scroll_style(),        // 滚动条样式
+            image_quality: Self::default_image_quality(),      // 图像质量预设
+            custom_image_quality: Self::default_custom_image_quality(), // 自定义图像质量数值
+            show_remote_cursor: Default::default(),            // 是否显示远程光标
+            lock_after_session_end: Default::default(),        // 会话结束后是否锁定本地电脑
+            terminal_persistent: Default::default(),           // 终端会话是否保持
+            privacy_mode: Default::default(),                  // 隐私模式（如禁用某些功能）
+            allow_swap_key: Default::default(),                // 是否允许交换 Ctrl/Alt 等
+            port_forwards: Default::default(),                 // 端口转发规则列表
+            direct_failures: Default::default(),               // 直连失败次数统计
+            disable_audio: Default::default(),                 // 是否禁用音频传输
+            disable_clipboard: Default::default(),             // 是否禁用剪贴板同步
+            enable_file_copy_paste: Default::default(),        // 是否启用文件复制粘贴
+            show_quality_monitor: Default::default(),          // 是否显示传输质量监控
+            follow_remote_cursor: Default::default(),          // 是否跟随远程鼠标
+            follow_remote_window: Default::default(),          // 是否跟随远程窗口
+            keyboard_mode: Default::default(),                 // 键盘输入模式
+            view_only: Default::default(),                     // 是否只读模式（不能操作远程）
+            show_my_cursor: Default::default(),                // 是否显示本地光标
+            reverse_mouse_wheel: Self::default_reverse_mouse_wheel(), // 鼠标滚轮反向
+            displays_as_individual_windows: Self::default_displays_as_individual_windows(), // 多显示器是否作为独立窗口
+            use_all_my_displays_for_the_remote_session: Self::default_use_all_my_displays_for_the_remote_session(), // 是否将所有显示器用于远程会话
+            trackpad_speed: Self::default_trackpad_speed(),    // 触控板/鼠标速度
+            custom_resolutions: Default::default(),            // 自定义分辨率列表
+            options: Self::default_options(),                  // 其他键值对选项
+            ui_flutter: Default::default(),                    // Flutter UI 相关配置
+            info: Default::default(),                          // 设备/会话信息
+            transfer: Default::default(),                      // 文件传输信息
+            sync_init_clipboard: Default::default(),           // 是否同步初始化剪贴板
         }
     }
 }
 
+
+//🧩 2. 辅助结构体：PeerInfoSerde 与 TransferSerde
+//✅ 作用：用于 ​​序列化传输与设备信息​​，比如：
+//PeerInfoSerde：保存远端主机的基本信息，可能用于 UI 显示
+//TransferSerde：记录当前正在进行的文件传输任务（读/写）
+
 #[derive(Debug, PartialEq, Default, Serialize, Deserialize, Clone)]
 pub struct PeerInfoSerde {
     #[serde(default, deserialize_with = "deserialize_string")]
-    pub username: String,
+    pub username: String,// 远程用户名称
     #[serde(default, deserialize_with = "deserialize_string")]
-    pub hostname: String,
+    pub hostname: String,// 远程主机名
     #[serde(default, deserialize_with = "deserialize_string")]
-    pub platform: String,
+    pub platform: String,// 远程操作系统平台（Windows/macOS/Linux）
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
 pub struct TransferSerde {
     #[serde(default, deserialize_with = "deserialize_vec_string")]
-    pub write_jobs: Vec<String>,
+    pub write_jobs: Vec<String>,// 当前写任务（文件传输）
     #[serde(default, deserialize_with = "deserialize_vec_string")]
-    pub read_jobs: Vec<String>,
+    pub read_jobs: Vec<String>, // 当前读任务
 }
 
+
+//🧩 3. 获取在线设备状态（NAT 保活相关）
+//✅ 作用：从全局的 ONLINE（一个线程安全的 HashMap<String, i64>，记录设备最后活跃时间）中，取出​​最后一个活跃的设备时间戳，作为“在线状态”参考​​。
+//可用于判断某个对等设备是否“在线”或最近活跃。
 #[inline]
 pub fn get_online_state() -> i64 {
     *ONLINE.lock().unwrap().values().max().unwrap_or(&0)
 }
 
+//🧩 4. 平台相关路径修正函数：patch()
+//✅ 作用：对某些特殊系统路径进行兼容性处理，比如：
+//Windows 系统服务账户路径
+//macOS 的配置文件夹差异
+//Linux 下 root 用户的路径回退逻辑
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn patch(path: PathBuf) -> PathBuf {
+	// 仅在非移动端平台执行
+    // Windows: 替换系统目录为服务账户目录
+    // macOS: 替换 Application Support 为 Preferences
+    // Linux: 如果是 root 用户，尝试获取当前普通用户的主目录
     if let Some(_tmp) = path.to_str() {
         #[cfg(windows)]
         return _tmp
@@ -619,8 +646,14 @@ fn patch(path: PathBuf) -> PathBuf {
     path
 }
 
+//🧩 5. Config2 的加载、保存与访问接口
+//✅ 作用：提供了 Config2（补充配置，如代理、NAT 类型、解锁 PIN、功能选项等）的：
+​​//加载（load）​​：从磁盘读取，同时解密敏感字段
+​​//保存（store）​​：加密敏感字段后存盘
+​​//单例访问​​：通过 CONFIG2（RwLock）实现全局共享、线程安全访问
 impl Config2 {
     fn load() -> Config2 {
+    	/* 加载并解密敏感字段，如 socks密码、unlock_pin */
         let mut config = Config::load_::<Config2>("2");
         let mut store = false;
         if let Some(mut socks) = config.socks {
@@ -641,10 +674,12 @@ impl Config2 {
     }
 
     pub fn file() -> PathBuf {
+    	/* 返回配置文件路径 */ 
         Config::file_("2")
     }
 
     fn store(&self) {
+    	/* 加密敏感字段并保存 */ 
         let mut config = self.clone();
         if let Some(mut socks) = config.socks {
             socks.password =
@@ -657,10 +692,12 @@ impl Config2 {
     }
 
     pub fn get() -> Config2 {
+    	/* 读取全局共享的 Config2（线程安全）*/
         return CONFIG2.read().unwrap().clone();
     }
 
     pub fn set(cfg: Config2) -> bool {
+    	/* 更新全局 Config2 并持久化 */
         let mut lock = CONFIG2.write().unwrap();
         if *lock == cfg {
             return false;
@@ -671,9 +708,17 @@ impl Config2 {
     }
 }
 
+//🧩 6. 通用配置加载与存储函数
+//✅ 作用：封装了基于 confy的​​通用配置读写逻辑​​，用于所有 Config/ Config2/ 其他结构体，支持：
+//自动序列化 / 反序列化
+//文件不存在时返回默认值
+//错误日志记录
+//Unix 文件权限控制（仅限非 Windows）
+
 pub fn load_path<T: serde::Serialize + serde::de::DeserializeOwned + Default + std::fmt::Debug>(
     file: PathBuf,
 ) -> T {
+	/* 基于 confy 库从文件加载任意配置结构体，出错时返回默认值 */
     let cfg = match confy::load_path(&file) {
         Ok(config) => config,
         Err(err) => {
@@ -691,6 +736,7 @@ pub fn load_path<T: serde::Serialize + serde::de::DeserializeOwned + Default + s
 
 #[inline]
 pub fn store_path<T: serde::Serialize>(path: PathBuf, cfg: T) -> crate::ResultType<()> {
+	/* 基于 confy 保存配置，Unix 下设置 0600 权限 */
     #[cfg(not(windows))]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -706,10 +752,18 @@ pub fn store_path<T: serde::Serialize>(path: PathBuf, cfg: T) -> crate::ResultTy
     }
 }
 
+//🧩 7. Config 的加载与存储（含 ID 生成与加密逻辑）
+//✅ 作用：Config是最核心的配置结构体之一，负责：
+//设备唯一标识符（ID）的生成与持久化
+//密码、密钥对、加密字段的解密 / 加密
+//兼容性处理（比如老版本没有 enc_id 的情况）
+//设备首次启动时生成合法 ID（循环尝试直到成功）
+
 impl Config {
     fn load_<T: serde::Serialize + serde::de::DeserializeOwned + Default + std::fmt::Debug>(
         suffix: &str,
     ) -> T {
+    	/* 加载任意配置结构体（模板方法）*/
         let file = Self::file_(suffix);
         let cfg = load_path(file);
         if suffix.is_empty() {
@@ -719,6 +773,7 @@ impl Config {
     }
 
     fn store_<T: serde::Serialize>(config: &T, suffix: &str) {
+    	/* 存储任意配置结构体 */
         let file = Self::file_(suffix);
         if let Err(err) = store_path(file, config) {
             log::error!("Failed to store {suffix} config: {err}");
@@ -726,6 +781,7 @@ impl Config {
     }
 
     fn load() -> Config {
+    	/* 加载 Config，解密字段如 password, enc_id，必要时生成新设备 ID */
         let mut config = Config::load_::<Config>("");
         let mut store = false;
         let (password, _, store1) = decrypt_str_or_original(&config.password, PASSWORD_ENC_VERSION);
