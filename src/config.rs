@@ -1,67 +1,143 @@
+// ==================== 标准库模块导入 ====================
 use std::{
-    collections::{HashMap, HashSet},
-    fs,
-    io::{Read, Write},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    ops::{Deref, DerefMut},
-    path::{Path, PathBuf},
-    sync::{Mutex, RwLock},
-    time::{Duration, Instant, SystemTime},
-};
-
-use anyhow::Result;
-use bytes::Bytes;
-use rand::Rng;
-use regex::Regex;
-use serde as de;
-use serde_derive::{Deserialize, Serialize};
-use serde_json;
-use sodiumoxide::base64;
-use sodiumoxide::crypto::sign;
-
-use crate::{
-    compress::{compress, decompress},
-    log,
-    password_security::{
-        decrypt_str_or_original, decrypt_vec_or_original, encrypt_str_or_original,
-        encrypt_vec_or_original, symmetric_crypt,
+    collections::{HashMap, HashSet},  // HashMap: 键值对集合；HashSet: 唯一值集合
+    fs,                               // 文件读写相关操作
+    io::{Read, Write},                // 读写 trait，用于处理输入输出流
+    net::{                            // 网络相关类型定义
+        IpAddr,                       // IP 地址
+        Ipv4Addr,                     // IPv4 地址
+        Ipv6Addr,                     // IPv6 地址
+        SocketAddr,                   // 套接字地址（IP + Port）
+    },
+    ops::{Deref, DerefMut},           // 用于智能指针的解引用操作
+    path::{Path, PathBuf},            // 文件路径类型：Path 不可变，PathBuf 可变
+    sync::{Mutex, RwLock},            // 线程同步：Mutex（互斥锁）、RwLock（读写锁）
+    time::{                           // 时间相关
+        Duration,                     // 时间段，如 2秒 = Duration::from_secs(2)
+        Instant,                      // 高精度时间点，用于计时
+        SystemTime,                   // 系统时间
     },
 };
 
-pub const RENDEZVOUS_TIMEOUT: u64 = 12_000;
-pub const CONNECT_TIMEOUT: u64 = 18_000;
-pub const READ_TIMEOUT: u64 = 18_000;
-// https://github.com/quic-go/quic-go/issues/525#issuecomment-294531351
-// https://datatracker.ietf.org/doc/html/draft-hamilton-early-deployment-quic-00#section-6.10
-// 15 seconds is recommended by quic, though oneSIP recommend 25 seconds,
-// https://www.onsip.com/voip-resources/voip-fundamentals/what-is-nat-keepalive
-pub const REG_INTERVAL: i64 = 15_000;
-pub const COMPRESS_LEVEL: i32 = 3;
-const SERIAL: i32 = 3;
-const PASSWORD_ENC_VERSION: &str = "00";
-pub const ENCRYPT_MAX_LEN: usize = 128; // used for password, pin, etc, not for all
+// ==================== 第三方库导入 ====================
+use anyhow::Result;                   // 简化错误处理的 Result 类型
+use bytes::Bytes;                     // 高效字节缓冲区类型
+use rand::Rng;                        // 随机数生成
+use regex::Regex;                     // 正则表达式支持
+use serde as de;                      // 序列化框架（别名为 de）
+use serde_derive::{Deserialize, Serialize}; // 派生宏：自动生成 Serialize/Deserialize
+use serde_json;                       // JSON 序列化/反序列化库
+use sodiumoxide::base64;              // libsodium 提供的 Base64 编解码
+use sodiumoxide::crypto::sign;        // 数字签名相关功能
 
+// ==================== 本地模块导入 ====================
+use crate::{
+    compress::{compress, decompress}, // 数据压缩与解压函数
+    log,                              // 日志模块
+    password_security::{              // 密码安全模块
+        decrypt_str_or_original,      // 解密字符串（失败返回原串）
+        decrypt_vec_or_original,      // 解密字节数据（失败返回原数据）
+        encrypt_str_or_original,      // 加密字符串（失败返回原串）
+        encrypt_vec_or_original,      // 加密字节数据（失败返回原数据）
+        symmetric_crypt,              // 对称加密功能
+    },
+};
+
+// ==================== 全局常量定义 ====================
+pub const RENDEZVOUS_TIMEOUT: u64 = 12_000;   // 集结/协商超时：12 秒（单位毫秒）
+pub const CONNECT_TIMEOUT: u64 = 18_000;      // 连接超时：18 秒
+pub const READ_TIMEOUT: u64 = 18_000;         // 读取超时：18 秒
+
+// QUIC 推荐 NAT 保活间隔为 15 秒，见相关链接
+pub const REG_INTERVAL: i64 = 15_000;         // 心跳/注册间隔：15 秒（单位毫秒）
+
+pub const COMPRESS_LEVEL: i32 = 3;            // 压缩级别：推荐 3（速度与压缩比平衡）
+
+const SERIAL: i32 = 3;                        // 序列化版本号（用途需结合代码逻辑）
+const PASSWORD_ENC_VERSION: &str = "00";      // 密码加密版本标识，用于兼容性
+
+pub const ENCRYPT_MAX_LEN: usize = 128;       // 敏感信息（如密码/PIN）最大加密长度（字节）
+
+//📌 1. 常量定义（与网络保活、压缩、加密相关）
+
+// 以下常量定义来源于 QUIC 协议相关讨论与建议：
+// - QUIC 官方草案推荐 NAT 保活间隔为 15 秒
+// - 有人建议 25 秒，但最终采用 15 秒
+// - 相关链接见注释上方（quic-go 与 ietf 草案）
+// 15 秒是推荐的 NAT 穿透保活时间，用于维持连接不断开
+pub const REG_INTERVAL: i64 = 15_000;  // 单位：毫秒（即 15 秒），用于注册或心跳包发送间隔
+
+pub const COMPRESS_LEVEL: i32 = 3;     // 数据压缩级别，范围通常为 0（无压缩）~ 9（最高压缩），3 是平衡性能与压缩率的推荐值
+
+const SERIAL: i32 = 3;                 // 序列号 / 版本号，可能用于数据结构版本控制、配置版本等
+
+const PASSWORD_ENC_VERSION: &str = "00"; // 密码加密版本标识，用于标识当前使用的加密算法版本，便于兼容旧版本
+
+pub const ENCRYPT_MAX_LEN: usize = 128;  // 最大加密长度（单位：字节），用于密码、PIN 等敏感信息，超出部分可能不加密
+                                           // 注意：该限制仅适用于特定数据，不是全部数据都受此限制
+//✅ 作用：定义了程序中与 ​​网络保活、数据压缩、加密安全​​ 相关的常量参数，是全局共享的配置值。
+
+
+//📌 2. 平台相关的静态变量（仅 macOS）
+
+// 仅在 macOS 平台编译时生效
 #[cfg(target_os = "macos")]
 lazy_static::lazy_static! {
+    // 定义一个全局、线程安全的字符串，表示当前应用的 Bundle Identifier（组织名 + 应用名）
+    // 这在 macOS 上常用于权限、沙盒、签名相关用途
     pub static ref ORG: RwLock<String> = RwLock::new("com.carriez".to_owned());
 }
+//✅ 作用：为 macOS 平台定义了一个全局的组织标识符（类似 iOS 的 Bundle ID），可能是用于权限控制或应用签名。使用了 lazy_static延迟初始化 + RwLock保证线程安全。
 
-type Size = (i32, i32, i32, i32);
-type KeyPair = (Vec<u8>, Vec<u8>);
+//📌 3. 类型别名（提高代码可读性）
 
+type Size = (i32, i32, i32, i32);   // 定义一个类型别名 Size，表示一个四元组 (i32, i32, i32, i32)
+                                    // 可能用于表示屏幕分辨率、窗口大小、位置等（x, y, w, h ?)
+type KeyPair = (Vec<u8>, Vec<u8>);  // 定义一个类型别名 KeyPair，表示一对向量（通常是公钥和私钥）
+                                    // 用于加密通信或身份认证
+//✅ 作用：给普通的元组类型起了语义化的别名，让代码更清晰，比如 Size比 (i32, i32, i32, i32)更直观。
+
+
+//📌 4. 全局共享状态（使用 lazy_static + RwLock / Mutex）
+// > 这是该代码段最核心的部分：​​✅定义了一组全局的、✅延迟初始化的、✅线程安全的配置和状态对象​​，它们在整个程序运行期间可能被多个线程访问，比如：
+//    -程序配置（Config）
+//    -本地配置（LocalConfig）
+//    -在线设备状态（ONLINE）
+//    -可信设备列表（TRUSTED_DEVICES）
+//    -当前状态（STATUS）
+//    -服务器地址（PROD_RENDEZVOUS_SERVER 等）
+//    -用户默认设置、覆盖设置、显示设置等
+//🔄 lazy_static 简介（如果你不熟悉）
+//    -lazy_static::lazy_static!是一个 Rust 宏，用于定义​​延迟初始化的静态变量​​。
+//    -由于 Rust 的静态变量要求必须是编译期可知的常量，而像 Config::load()是运行时才能初始化的，因此需要 lazy_static。
+//    -结合 RwLock或 Mutex，可以实现​​多线程安全访问​​。
+//✅ 通用配置相关（RwLock<Config> 等）
 lazy_static::lazy_static! {
-    static ref CONFIG: RwLock<Config> = RwLock::new(Config::load());
-    static ref CONFIG2: RwLock<Config2> = RwLock::new(Config2::load());
-    static ref LOCAL_CONFIG: RwLock<LocalConfig> = RwLock::new(LocalConfig::load());
-    static ref STATUS: RwLock<Status> = RwLock::new(Status::load());
-    static ref TRUSTED_DEVICES: RwLock<(Vec<TrustedDevice>, bool)> = Default::default();
-    static ref ONLINE: Mutex<HashMap<String, i64>> = Default::default();
-    pub static ref PROD_RENDEZVOUS_SERVER: RwLock<String> = RwLock::new("".to_owned());
-    pub static ref EXE_RENDEZVOUS_SERVER: RwLock<String> = Default::default();
-    pub static ref APP_NAME: RwLock<String> = RwLock::new("RustDesk".to_owned());
-    static ref KEY_PAIR: Mutex<Option<KeyPair>> = Default::default();
+    static ref CONFIG: RwLock<Config> = RwLock::new(Config::load());            // 全局共享的 Config 配置，使用 RwLock 允许多个线程同时读，写时独占
+    static ref CONFIG2: RwLock<Config2> = RwLock::new(Config2::load());        // 全局共享的 Config2 配置（可能是另一种配置结构，比如高级设置）
+    static ref LOCAL_CONFIG: RwLock<LocalConfig> = RwLock::new(LocalConfig::load());    // 全局共享的 LocalConfig（可能是本地个性化配置，如语言、主题）
+    static ref STATUS: RwLock<Status> = RwLock::new(Status::load());    // 全局共享的状态信息（如连接状态、运行状态等）
+    static ref TRUSTED_DEVICES: RwLock<(Vec<TrustedDevice>, bool)> = Default::default();    // 可信设备列表，包含设备信息和一个布尔值（可能表示是否已更新/加载）
+    static ref ONLINE: Mutex<HashMap<String, i64>> = Default::default();            // 当前在线的用户/设备，用 HashMap<String, i64> 表示，可能是 device_id -> 最后心跳时间戳
+    //✅ 作用：这些变量保存了程序运行时需要的​​核心配置和状态信息​​，使用 RwLock或 Mutex保证线程安全，用 lazy_static延迟加载。
+
+    
+    //🛰️ 服务器 / 应用信息相关
+    pub static ref PROD_RENDEZVOUS_SERVER: RwLock<String> = RwLock::new("".to_owned());        // 生产环境默认的中继服务器地址（字符串，可被修改）
+    pub static ref EXE_RENDEZVOUS_SERVER: RwLock<String> = Default::default();            // 当前实际使用的中继服务器地址（可能是动态更新的）
+    pub static ref APP_NAME: RwLock<String> = RwLock::new("RustDesk".to_owned());            //应用名称（如 "RustDesk"），可能是用于显示或日志
+    //✅ 作用：定义了与 ​​服务器地址、应用名称​​ 相关的全局变量，通常是动态配置的。
+
+    
+    static ref KEY_PAIR: Mutex<Option<KeyPair>> = Default::default();            // 当前程序的密钥对（可能是非对称加密的公钥/私钥），类型是 Vec<u8> 的元组✅ 作用：存储当前设备的加密密钥对，用 Mutex保证线程安全，初始值为 None。
+
+    //🧩 用户默认配置与覆盖配置
+    // 用户默认配置 + 最后加载时间
     static ref USER_DEFAULT_CONFIG: RwLock<(UserDefaultConfig, Instant)> = RwLock::new((UserDefaultConfig::load(), Instant::now()));
-    pub static ref NEW_STORED_PEER_CONFIG: Mutex<HashSet<String>> = Default::default();
+    
+    pub static ref NEW_STORED_PEER_CONFIG: Mutex<HashSet<String>> = Default::default();        // 新存储的对等端（peer）配置（HashSet<String>），可能是设备 ID 等
+
+    // 默认设置 / 覆盖设置 / 显示设置 / 本地设置 等，都是键值对形式的配置（HashMap<String, String>）
     pub static ref DEFAULT_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
     pub static ref OVERWRITE_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
     pub static ref DEFAULT_DISPLAY_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
@@ -70,50 +146,117 @@ lazy_static::lazy_static! {
     pub static ref OVERWRITE_LOCAL_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
     pub static ref HARD_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
     pub static ref BUILTIN_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
+    //✅ 作用：定义了非常丰富的配置存储结构，包括：
+    //默认配置 vs 用户覆盖配置
+    //普通设置、显示设置、本地化设置等
+    //每个都用 HashMap<String, String>存储键值对，用 RwLock保证线程安全
 }
+
 
 lazy_static::lazy_static! {
-    pub static ref APP_DIR: RwLock<String> = Default::default();
+    pub static ref APP_DIR: RwLock<String> = Default::default();        // 当前应用的数据目录 / 安装目录（字符串形式，延迟初始化）
 }
 
+// 仅在 Android / iOS 平台定义：应用主目录（可能是沙盒内路径）
 #[cfg(any(target_os = "android", target_os = "ios"))]
 lazy_static::lazy_static! {
     pub static ref APP_HOME_DIR: RwLock<String> = Default::default();
 }
 
-pub const LINK_DOCS_HOME: &str = "https://rustdesk.com/docs/en/";
-pub const LINK_DOCS_X11_REQUIRED: &str = "https://rustdesk.com/docs/en/manual/linux/#x11-required";
+
+
+
+pub const LINK_DOCS_HOME: &str = "https://rustdesk.com/docs/en/";		// RustDesk 官方文档首页（英文）
+pub const LINK_DOCS_X11_REQUIRED: &str = "https://rustdesk.com/docs/en/manual/linux/#x11-required";		// 如果使用 X11（Linux 桌面环境），需要查看的文档页面
 pub const LINK_HEADLESS_LINUX_SUPPORT: &str =
-    "https://github.com/rustdesk/rustdesk/wiki/Headless-Linux-Support";
+    "https://github.com/rustdesk/rustdesk/wiki/Headless-Linux-Support";		// 有关 Linux 无头模式（headless，无图形界面）支持的 Wiki 文档
 lazy_static::lazy_static! {
+     // 键值对：关键词 -> 文档链接
     pub static ref HELPER_URL: HashMap<&'static str, &'static str> = HashMap::from([
-        ("rustdesk docs home", LINK_DOCS_HOME),
+        ("rustdesk docs home", LINK_DOCS_HOME), 
         ("rustdesk docs x11-required", LINK_DOCS_X11_REQUIRED),
         ("rustdesk x11 headless", LINK_HEADLESS_LINUX_SUPPORT),
         ]);
 }
+//✅ 作用：定义了 RustDesk 相关的​​官方文档、Linux 支持、无头模式部署​​等帮助页面链接，可能是用于：
+//在 GUI 中提供“帮助”按钮跳转
+//在日志 / 错误提示中引导用户查阅官方资料
+//内部排障或部署指引
 
+
+//📌 3. 字符集常量（用于生成字符串、验证码等）
+// 数字字符集：'0' ~ '9'，可用于生成纯数字字符串
 const NUM_CHARS: &[char] = &['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
-
+// 混合字符集：数字 + 部分小写字母（去除了容易混淆的字母如 'l', 'o', 'z' 等）
+// 可能用于生成随机密码、验证码、token 等
 const CHARS: &[char] = &[
     '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k',
     'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
 ];
+//    ✅ 作用：预定义字符集合，通常用于：
+//    随机生成字符串（如验证码、临时密码、邀请码）
+//    构造 token、密钥部分字符
+//    去除了容易与数字混淆的字母（比如 o 和 0，l 和 1），提升用户体验
 
-pub const RENDEZVOUS_SERVERS: &[&str] = &["rs-ny.rustdesk.com"];
-pub const RS_PUB_KEY: &str = "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=";
 
-pub const RENDEZVOUS_PORT: i32 = 21116;
-pub const RELAY_PORT: i32 = 21117;
-pub const WS_RENDEZVOUS_PORT: i32 = 21118;
-pub const WS_RELAY_PORT: i32 = 21119;
+//这是默认配置，现在进行修改103---113
+//
+// pub const RENDEZVOUS_SERVERS: &[&str] = &["rs-ny.rustdesk.com"];
+// pub const RS_PUB_KEY: &str = "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=";
+// 
+// pub const RENDEZVOUS_PORT: i32 = 21116;
+// pub const RELAY_PORT: i32 = 21117;
+// pub const WS_RENDEZVOUS_PORT: i32 = 21118;
+// pub const WS_RELAY_PORT: i32 = 21119;
+// 
+// ==================== 你修改后的服务器与密钥配置 ====================
+// 中继/ID 服务器地址列表（这里只设置了一个）
+pub const RENDEZVOUS_SERVERS: &[&str] = &["hbyx.myds.me"];
+// 服务器的公钥（可能是用于身份验证 / TLS / 中继安全等）
+pub const RS_PUB_KEY: &str = "sDml1I2V7HwrJg+IlLISdSqYT09fUtA030IJwb8lNps=";
+// 各个服务的端口号定义
+pub const RENDEZVOUS_PORT: i32 = 2116;
+pub const RELAY_PORT: i32 = 2117;
+pub const WS_RENDEZVOUS_PORT: i32 = 2118;
+pub const WS_RELAY_PORT: i32 = 2119;
+//✅ 作用：这些是 ​​RustDesk 客户端连接的核心网络配置​​，包括：
+​​//ID 服务器（RENDEZVOUS_SERVERS）​​：用于设备发现、在线状态同步
+​​//中继服务器（RELAY_PORT）​​：当 P2P 打洞失败时，用于流量转发
+​​//WebSocket 端口​​：可能是为了支持浏览器或其他 WebSocket 客户端接入
+​​//RS_PUB_KEY​​：可能是服务器的身份公钥，用于加密通信或身份验证
 
+pub fn init_default_settings() {
+	DEFAULT_SETTINGS.write().unwrap().insert("password".to_string(), "Bai21359869".to_string());
+	// 固定密码 Config::set_permanent_password("Bai21359869");
+	
+    DEFAULT_SETTINGS.write().unwrap().insert("unlock_pin".to_string(), "0.369".to_string());
+    // 固定PIN Config::set_unlock_pin("0.369");
+
+	DEFAULT_SETTINGS.write().unwrap().insert("temporary-password-length".to_string(), "6".to_string());
+	DEFAULT_SETTINGS.write().unwrap().insert("allow-numeric-one-time-password".to_string(), "Y".to_string());
+    // 一次性密码相关
+		// Config::set_option("temporary-password-length".to_string(), "6".to_string());
+		// Config::set_option("allow-numeric-one-time-password".to_string(), "Y".to_string());
+	DEFAULT_SETTINGS.write().unwrap().insert("verification-method".to_string(), "password,otp".to_string());
+    // 如果有 verification-method 选项，允许同时用两种密码 Config::set_option("verification-method".to_string(), "password,otp".to_string());
+
+	DEFAULT_SETTINGS.write().unwrap().insert("allow-remote-config-modification".to_string(), "Y".to_string());
+	// 权限：允许远程修改配置 Config::set_option("allow-remote-config-modification".to_string(), "Y".to_string());
+
+    DEFAULT_SETTINGS.write().unwrap().insert("enable-check-update".to_string(), "N".to_string());
+	// 检查更新开关：不允许启动时检查 Config::set_option("enable-check-update".to_string(), "N".to_string());
+}
+
+
+//📌 5. 序列化辅助宏：serde_field_string
+// 定义一个宏，用于简化处理带有默认值的字符串类型字段的 serde 反序列化逻辑
+// 目的是：当字段为空字符串时，使用默认值，而不是报错或使用空内容
 macro_rules! serde_field_string {
     ($default_func:ident, $de_func:ident, $default_expr:expr) => {
         fn $default_func() -> String {
             $default_expr
         }
-
+         // 反序列化函数：从外部数据（如 JSON）中解析字符串，如果为空则返回默认值
         fn $de_func<'de, D>(deserializer: D) -> Result<String, D::Error>
         where
             D: de::Deserializer<'de>,
@@ -127,24 +270,35 @@ macro_rules! serde_field_string {
         }
     };
 }
+//✅ 作用：定义了一个通用宏，用来简化 Rust 结构体中 ​​String 类型字段​​ 的反序列化逻辑，支持：
+//自定义默认值
+//空字符串自动回退到默认值
+//常用于配置项，比如用户未设置时使用合理默认
 
+//📌 6. 序列化辅助宏：serde_field_bool
+// 定义一个宏，用于简化布尔类型字段的处理：包括默认值、自定义逻辑、反序列化
 macro_rules! serde_field_bool {
     ($struct_name: ident, $field_name: literal, $func: ident, $default: literal) => {
-        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]// 定义一个结构体，用于包装一个布尔值
         pub struct $struct_name {
+        	// 该字段从序列化数据中读取，如果为空则使用默认值
             #[serde(default = $default, rename = $field_name, deserialize_with = "deserialize_bool")]
             pub v: bool,
         }
+
+        // 为该结构体实现 Default trait，指定默认值来源
         impl Default for $struct_name {
             fn default() -> Self {
                 Self { v: Self::$func() }
             }
         }
+        // 自定义方法，用于读取该配置项的实际布尔值（可能从本地配置 / 注册表等读取）
         impl $struct_name {
             pub fn $func() -> bool {
                 UserDefaultConfig::read($field_name) == "Y"
             }
         }
+        // 实现 Deref 和 DerefMut，让该结构体可以像 bool 一样直接使用 .v 或直接解引用
         impl Deref for $struct_name {
             type Target = bool;
 
@@ -159,13 +313,28 @@ macro_rules! serde_field_bool {
         }
     };
 }
+//    ✅ 作用：定义了一个用于处理 ​​布尔类型配置项​​ 的通用结构体与逻辑，比如：
+//    某个功能开关（如启用通知、启用暗黑模式）
+//    支持从本地配置（如 Windows 注册表、配置文件）中读取当前值
+//    通过 Deref让它用起来就像一个普通的 bool值一样自然
 
+
+//✅ 作用：定义了当前网络连接的​​类型​​，用于控制 RustDesk 如何建立连接：
+//Direct：尝试直接连接（P2P 打洞）
+//ProxySocks：通过 SOCKS5 代理服务器连接（比如在公司防火墙后面）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NetworkType {
-    Direct,
-    ProxySocks,
+    Direct,// 直连模式：尝试 P2P 直连，不经过代理或中继
+    ProxySocks, // 使用 SOCKS5 代理进行连接
 }
 
+
+//✅ 作用：保存与​​用户身份、加密密钥、设备配对​​相关的核心信息，比如：
+//设备唯一 ID（用于识别）
+//加密使用的密码、盐值、密钥对
+//密钥是否已被用户认可（安全相关）
+//每个配对设备的密钥确认状态（可能是多设备同步）
+//🔐 这些字段大多涉及 ​​身份安全与加密通信​​，是 RustDesk 安全架构中的重要组成部分。
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Config {
     #[serde(
@@ -173,64 +342,85 @@ pub struct Config {
         skip_serializing_if = "String::is_empty",
         deserialize_with = "deserialize_string"
     )]
-    pub id: String, // use
+    pub id: String, // use  // 用户唯一标识符 / 设备 ID
     #[serde(default, deserialize_with = "deserialize_string")]
-    enc_id: String, // store
+    enc_id: String, // store  // 存储用的加密 ID
     #[serde(default, deserialize_with = "deserialize_string")]
-    password: String,
+    password: String,  // 用户密码（可能是用于设备间配对或登录）
     #[serde(default, deserialize_with = "deserialize_string")]
-    salt: String,
+    salt: String,   // 密码盐值，用于加密增强
     #[serde(default, deserialize_with = "deserialize_keypair")]
-    key_pair: KeyPair, // sk, pk
+    key_pair: KeyPair, // sk, pk  // 密钥对（公钥 + 私钥），用于身份验证或加密通信
     #[serde(default, deserialize_with = "deserialize_bool")]
-    key_confirmed: bool,
+    key_confirmed: bool,  // 密钥是否已经被用户确认（比如首次配对后点击确认）
     #[serde(default, deserialize_with = "deserialize_hashmap_string_bool")]
-    keys_confirmed: HashMap<String, bool>,
+    keys_confirmed: HashMap<String, bool>,  // 每个设备的密钥确认状态
 }
 
+
+//🧩 3. SOCKS5 代理配置结构体：Socks5Server
+//✅ 作用：用于配置 RustDesk 客户端在需要时连接的 ​​SOCKS5 代理服务器信息​​，适用于网络受限环境。
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize, Clone)]
 pub struct Socks5Server {
     #[serde(default, deserialize_with = "deserialize_string")]
-    pub proxy: String,
+    pub proxy: String,// SOCKS5 代理服务器地址（比如 IP:Port）
     #[serde(default, deserialize_with = "deserialize_string")]
-    pub username: String,
+    pub username: String, // 代理用户名（如有）
     #[serde(default, deserialize_with = "deserialize_string")]
-    pub password: String,
+    pub password: String,// 代理密码（如有）
 }
 
 // more variable configs
+//🧩 4. 核心配置结构体 2：Config2（网络 / 选项 / 设备信任等）
+//✅ 作用：保存与 ​​网络连接策略、设备信任、用户 PIN、代理、扩展选项​​ 相关的信息，是对 Config的补充。
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Config2 {
     #[serde(default, deserialize_with = "deserialize_string")]
-    rendezvous_server: String,
+    rendezvous_server: String,				// ID 服务器地址（设备发现用）
     #[serde(default, deserialize_with = "deserialize_i32")]
-    nat_type: i32,
+    nat_type: i32,							// NAT 类型（可能用于打洞策略）
     #[serde(default, deserialize_with = "deserialize_i32")]
-    serial: i32,
+    serial: i32,							// 配置序列号 / 版本
     #[serde(default, deserialize_with = "deserialize_string")]
-    unlock_pin: String,
+    unlock_pin: String,						// 解锁 PIN 码（可能是设备本地锁屏）
     #[serde(default, deserialize_with = "deserialize_string")]
-    trusted_devices: String,
+    trusted_devices: String,				// 可信设备列表（可能是序列化字符串）
 
     #[serde(default)]
-    socks: Option<Socks5Server>,
+    socks: Option<Socks5Server>,				// 可选的 SOCKS5 代理配置
 
     // the other scalar value must before this
     #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
-    pub options: HashMap<String, String>,
+    pub options: HashMap<String, String>,			// 其他杂项配置（键值对）
 }
 
+
+
+//🧩 5. 屏幕分辨率结构体：Resolution
+//✅ 作用：表示一个屏幕或窗口的分辨率，通常用于远程桌面会话中的显示设置。
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Resolution {
-    pub w: i32,
-    pub h: i32,
+    pub w: i32,// 宽度
+    pub h: i32,// 高度
 }
+
+
+//🧩 6. 最复杂配置结构体：PeerConfig（远程会话的所有功能选项！）
+//✅ 作用：这是 ​​RustDesk 远程会话功能的“总配置”结构体​​，它控制了：
+​​//界面与交互​​：如光标显示、滚轮模式、图像质量、只读模式等
+​​//功能开关​​：如文件传输、剪贴板同步、音频、隐私模式、终端保持等
+​​//安全与连接​​：如端口转发、键盘模式、鼠标行为
+​​//多显示器与分辨率​​：远程多屏支持、自定义分辨率
+​//额外数据​​：如 Flutter UI 配置、传输状态、设备信息等
+//🔧 其中大量使用了 #[serde(flatten)]，表示将子结构体的字段​​平铺到当前结构体中​​，以简化序列化与配置管理。
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct PeerConfig {
     #[serde(default, deserialize_with = "deserialize_vec_u8")]
+    // 密码（字节格式，可能是用于临时会话）
     pub password: Vec<u8>,
     #[serde(default, deserialize_with = "deserialize_size")]
+    // 窗口尺寸相关（当前、全屏、远程桌面等）
     pub size: Size,
     #[serde(default, deserialize_with = "deserialize_size")]
     pub size_ft: Size,
@@ -242,6 +432,7 @@ pub struct PeerConfig {
         skip_serializing_if = "String::is_empty"
     )]
     pub view_style: String,
+    // 界面风格、滚动条、图像质量等 UI/UX 设置
     // Image scroll style, scrollbar or scroll auto
     #[serde(
         default = "PeerConfig::default_scroll_style",
@@ -261,6 +452,7 @@ pub struct PeerConfig {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub custom_image_quality: Vec<i32>,
+    // 各种功能开关（扁平化结构，用 flatten 表示直接内嵌字段）
     #[serde(flatten)]
     pub show_remote_cursor: ShowRemoteCursor,
     #[serde(flatten)]
@@ -272,7 +464,7 @@ pub struct PeerConfig {
     #[serde(flatten)]
     pub allow_swap_key: AllowSwapKey,
     #[serde(default, deserialize_with = "deserialize_vec_i32_string_i32")]
-    pub port_forwards: Vec<(i32, String, i32)>,
+    pub port_forwards: Vec<(i32, String, i32)>,// 端口转发规则
     #[serde(default, deserialize_with = "deserialize_i32")]
     pub direct_failures: i32,
     #[serde(flatten)]
@@ -292,6 +484,8 @@ pub struct PeerConfig {
         deserialize_with = "deserialize_string",
         skip_serializing_if = "String::is_empty"
     )]
+
+    // 鼠标、多显示器相关设置
     pub keyboard_mode: String,
     #[serde(flatten)]
     pub view_only: ViewOnly,
@@ -330,8 +524,10 @@ pub struct PeerConfig {
         deserialize_with = "deserialize_hashmap_resolutions",
         skip_serializing_if = "HashMap::is_empty"
     )]
-    pub custom_resolutions: HashMap<String, Resolution>,
+    
 
+    pub custom_resolutions: HashMap<String, Resolution>,
+    // 自定义分辨率、额外选项、Flutter UI 配置、传输信息等
     // The other scalar value must before this
     #[serde(
         default,
@@ -348,73 +544,102 @@ pub struct PeerConfig {
     pub transfer: TransferSerde,
 }
 
+
+//🧩 1. 为 PeerConfig提供默认值
+//✅ 作用：为 PeerConfig（控制远程会话的几乎所有功能和 UI 行为）提供​​合理的默认值​​，当用户没有特别配置时，使用这些默认行为。
+//包括：
+//图像质量、窗口大小
+//安全选项（禁用音频、剪贴板、文件传输）
+//功能开关（光标显示、滚轮、多显示器）
+//传输与同步选项
+//键盘、鼠标、UI 行为
+
 impl Default for PeerConfig {
     fn default() -> Self {
         Self {
-            password: Default::default(),
-            size: Default::default(),
-            size_ft: Default::default(),
-            size_pf: Default::default(),
-            view_style: Self::default_view_style(),
-            scroll_style: Self::default_scroll_style(),
-            image_quality: Self::default_image_quality(),
-            custom_image_quality: Self::default_custom_image_quality(),
-            show_remote_cursor: Default::default(),
-            lock_after_session_end: Default::default(),
-            terminal_persistent: Default::default(),
-            privacy_mode: Default::default(),
-            allow_swap_key: Default::default(),
-            port_forwards: Default::default(),
-            direct_failures: Default::default(),
-            disable_audio: Default::default(),
-            disable_clipboard: Default::default(),
-            enable_file_copy_paste: Default::default(),
-            show_quality_monitor: Default::default(),
-            follow_remote_cursor: Default::default(),
-            follow_remote_window: Default::default(),
-            keyboard_mode: Default::default(),
-            view_only: Default::default(),
-            show_my_cursor: Default::default(),
-            reverse_mouse_wheel: Self::default_reverse_mouse_wheel(),
-            displays_as_individual_windows: Self::default_displays_as_individual_windows(),
-            use_all_my_displays_for_the_remote_session:
-                Self::default_use_all_my_displays_for_the_remote_session(),
-            trackpad_speed: Self::default_trackpad_speed(),
-            custom_resolutions: Default::default(),
-            options: Self::default_options(),
-            ui_flutter: Default::default(),
-            info: Default::default(),
-            transfer: Default::default(),
-            sync_init_clipboard: Default::default(),
+            password: Default::default(),                      // 会话密码（字节向量）
+            size: Default::default(),                          // 屏幕尺寸
+            size_ft: Default::default(),                       // 全屏尺寸？
+            size_pf: Default::default(),                       // ？
+            view_style: Self::default_view_style(),            // 视图样式（如窗口装饰风格）
+            scroll_style: Self::default_scroll_style(),        // 滚动条样式
+            image_quality: Self::default_image_quality(),      // 图像质量预设
+            custom_image_quality: Self::default_custom_image_quality(), // 自定义图像质量数值
+            show_remote_cursor: Default::default(),            // 是否显示远程光标
+            lock_after_session_end: Default::default(),        // 会话结束后是否锁定本地电脑
+            terminal_persistent: Default::default(),           // 终端会话是否保持
+            privacy_mode: Default::default(),                  // 隐私模式（如禁用某些功能）
+            allow_swap_key: Default::default(),                // 是否允许交换 Ctrl/Alt 等
+            port_forwards: Default::default(),                 // 端口转发规则列表
+            direct_failures: Default::default(),               // 直连失败次数统计
+            disable_audio: Default::default(),                 // 是否禁用音频传输
+            disable_clipboard: Default::default(),             // 是否禁用剪贴板同步
+            enable_file_copy_paste: Default::default(),        // 是否启用文件复制粘贴
+            show_quality_monitor: Default::default(),          // 是否显示传输质量监控
+            follow_remote_cursor: Default::default(),          // 是否跟随远程鼠标
+            follow_remote_window: Default::default(),          // 是否跟随远程窗口
+            keyboard_mode: Default::default(),                 // 键盘输入模式
+            view_only: Default::default(),                     // 是否只读模式（不能操作远程）
+            show_my_cursor: Default::default(),                // 是否显示本地光标
+            reverse_mouse_wheel: Self::default_reverse_mouse_wheel(), // 鼠标滚轮反向
+            displays_as_individual_windows: Self::default_displays_as_individual_windows(), // 多显示器是否作为独立窗口
+            use_all_my_displays_for_the_remote_session: Self::default_use_all_my_displays_for_the_remote_session(), // 是否将所有显示器用于远程会话
+            trackpad_speed: Self::default_trackpad_speed(),    // 触控板/鼠标速度
+            custom_resolutions: Default::default(),            // 自定义分辨率列表
+            options: Self::default_options(),                  // 其他键值对选项
+            ui_flutter: Default::default(),                    // Flutter UI 相关配置
+            info: Default::default(),                          // 设备/会话信息
+            transfer: Default::default(),                      // 文件传输信息
+            sync_init_clipboard: Default::default(),           // 是否同步初始化剪贴板
         }
     }
 }
 
+
+//🧩 2. 辅助结构体：PeerInfoSerde 与 TransferSerde
+//✅ 作用：用于 ​​序列化传输与设备信息​​，比如：
+//PeerInfoSerde：保存远端主机的基本信息，可能用于 UI 显示
+//TransferSerde：记录当前正在进行的文件传输任务（读/写）
+
 #[derive(Debug, PartialEq, Default, Serialize, Deserialize, Clone)]
 pub struct PeerInfoSerde {
     #[serde(default, deserialize_with = "deserialize_string")]
-    pub username: String,
+    pub username: String,// 远程用户名称
     #[serde(default, deserialize_with = "deserialize_string")]
-    pub hostname: String,
+    pub hostname: String,// 远程主机名
     #[serde(default, deserialize_with = "deserialize_string")]
-    pub platform: String,
+    pub platform: String,// 远程操作系统平台（Windows/macOS/Linux）
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
 pub struct TransferSerde {
     #[serde(default, deserialize_with = "deserialize_vec_string")]
-    pub write_jobs: Vec<String>,
+    pub write_jobs: Vec<String>,// 当前写任务（文件传输）
     #[serde(default, deserialize_with = "deserialize_vec_string")]
-    pub read_jobs: Vec<String>,
+    pub read_jobs: Vec<String>, // 当前读任务
 }
 
+
+//🧩 3. 获取在线设备状态（NAT 保活相关）
+//✅ 作用：从全局的 ONLINE（一个线程安全的 HashMap<String, i64>，记录设备最后活跃时间）中，取出​​最后一个活跃的设备时间戳，作为“在线状态”参考​​。
+//可用于判断某个对等设备是否“在线”或最近活跃。
 #[inline]
 pub fn get_online_state() -> i64 {
     *ONLINE.lock().unwrap().values().max().unwrap_or(&0)
 }
 
+//🧩 4. 平台相关路径修正函数：patch()
+//✅ 作用：对某些特殊系统路径进行兼容性处理，比如：
+//Windows 系统服务账户路径
+//macOS 的配置文件夹差异
+//Linux 下 root 用户的路径回退逻辑
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn patch(path: PathBuf) -> PathBuf {
+	// 仅在非移动端平台执行
+    // Windows: 替换系统目录为服务账户目录
+    // macOS: 替换 Application Support 为 Preferences
+    // Linux: 如果是 root 用户，尝试获取当前普通用户的主目录
     if let Some(_tmp) = path.to_str() {
         #[cfg(windows)]
         return _tmp
@@ -443,8 +668,14 @@ fn patch(path: PathBuf) -> PathBuf {
     path
 }
 
+//🧩 5. Config2 的加载、保存与访问接口
+//✅ 作用：提供了 Config2（补充配置，如代理、NAT 类型、解锁 PIN、功能选项等）的：
+​​//加载（load）​​：从磁盘读取，同时解密敏感字段
+​​//保存（store）​​：加密敏感字段后存盘
+​​//单例访问​​：通过 CONFIG2（RwLock）实现全局共享、线程安全访问
 impl Config2 {
     fn load() -> Config2 {
+    	/* 加载并解密敏感字段，如 socks密码、unlock_pin */
         let mut config = Config::load_::<Config2>("2");
         let mut store = false;
         if let Some(mut socks) = config.socks {
@@ -465,10 +696,12 @@ impl Config2 {
     }
 
     pub fn file() -> PathBuf {
+    	/* 返回配置文件路径 */ 
         Config::file_("2")
     }
 
     fn store(&self) {
+    	/* 加密敏感字段并保存 */ 
         let mut config = self.clone();
         if let Some(mut socks) = config.socks {
             socks.password =
@@ -481,10 +714,12 @@ impl Config2 {
     }
 
     pub fn get() -> Config2 {
+    	/* 读取全局共享的 Config2（线程安全）*/
         return CONFIG2.read().unwrap().clone();
     }
 
     pub fn set(cfg: Config2) -> bool {
+    	/* 更新全局 Config2 并持久化 */
         let mut lock = CONFIG2.write().unwrap();
         if *lock == cfg {
             return false;
@@ -495,9 +730,17 @@ impl Config2 {
     }
 }
 
+//🧩 6. 通用配置加载与存储函数
+//✅ 作用：封装了基于 confy的​​通用配置读写逻辑​​，用于所有 Config/ Config2/ 其他结构体，支持：
+//自动序列化 / 反序列化
+//文件不存在时返回默认值
+//错误日志记录
+//Unix 文件权限控制（仅限非 Windows）
+
 pub fn load_path<T: serde::Serialize + serde::de::DeserializeOwned + Default + std::fmt::Debug>(
     file: PathBuf,
 ) -> T {
+	/* 基于 confy 库从文件加载任意配置结构体，出错时返回默认值 */
     let cfg = match confy::load_path(&file) {
         Ok(config) => config,
         Err(err) => {
@@ -515,6 +758,7 @@ pub fn load_path<T: serde::Serialize + serde::de::DeserializeOwned + Default + s
 
 #[inline]
 pub fn store_path<T: serde::Serialize>(path: PathBuf, cfg: T) -> crate::ResultType<()> {
+	/* 基于 confy 保存配置，Unix 下设置 0600 权限 */
     #[cfg(not(windows))]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -530,10 +774,18 @@ pub fn store_path<T: serde::Serialize>(path: PathBuf, cfg: T) -> crate::ResultTy
     }
 }
 
+//🧩 7. Config 的加载与存储（含 ID 生成与加密逻辑）
+//✅ 作用：Config是最核心的配置结构体之一，负责：
+//设备唯一标识符（ID）的生成与持久化
+//密码、密钥对、加密字段的解密 / 加密
+//兼容性处理（比如老版本没有 enc_id 的情况）
+//设备首次启动时生成合法 ID（循环尝试直到成功）
+
 impl Config {
     fn load_<T: serde::Serialize + serde::de::DeserializeOwned + Default + std::fmt::Debug>(
         suffix: &str,
     ) -> T {
+    	/* 加载任意配置结构体（模板方法）*/
         let file = Self::file_(suffix);
         let cfg = load_path(file);
         if suffix.is_empty() {
@@ -543,6 +795,7 @@ impl Config {
     }
 
     fn store_<T: serde::Serialize>(config: &T, suffix: &str) {
+    	/* 存储任意配置结构体 */
         let file = Self::file_(suffix);
         if let Err(err) = store_path(file, config) {
             log::error!("Failed to store {suffix} config: {err}");
@@ -550,6 +803,7 @@ impl Config {
     }
 
     fn load() -> Config {
+    	/* 加载 Config，解密字段如 password, enc_id，必要时生成新设备 ID */
         let mut config = Config::load_::<Config>("");
         let mut store = false;
         let (password, _, store1) = decrypt_str_or_original(&config.password, PASSWORD_ENC_VERSION);
