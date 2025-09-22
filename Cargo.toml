@@ -1,13 +1,18 @@
-[package]
-name = "hbb_common"
-version = "0.1.0"
-authors = ["open-trade <info@opentradesolutions.com>"]
-edition = "2018"
+[package] # [基础包信息]
+name = "hbb_common" #名称
+version = "0.1.0"  #版本
+authors = ["open-trade <info@opentradesolutions.com>"] #作者
+edition = "2018"  # Rust Edition版本
+
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# new flexi_logger failed on rustc 1.75
+# new flexi_logger failed on rustc 1.75  常规依赖项
+#   📌 很多依赖都用了 ​​特定版本​​ 或 ​​feature flags（功能开关）​​，比如：
+#  tokio = { version = "1.44", features = ["full"] }启用了 tokio 所有功能
+#  bytes = { version = "1.10", features = ["serde"] }启用了 serde 支持
+
 flexi_logger = { version = "0.27", features = ["async"] }
 protobuf = { version = "3.7", features = ["with-bytes"] }
 tokio = { version = "1.44", features = ["full"] }
@@ -48,11 +53,16 @@ url = "2.5"
 sha2 = "0.10"
 whoami = "1.5"
 
+# 平台特定依赖
+# 这些依赖 ​​只在非 Android 和非 iOS 的平台（比如 Windows、macOS、Linux）​​ 下引入：
+# mac_address：获取 MAC 地址
+# default_net和 machine-uid：来自 git 的自定义依赖，可能是获取网络或设备唯一标识
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 mac_address = "1.1"
 default_net = { git = "https://github.com/rustdesk-org/default_net" }
 machine-uid = { git = "https://github.com/rustdesk-org/machine-uid" }
-
+# 这些依赖 ​​只在非 macOS 且非 Windows 的平台（比如 Linux）​​ 下引入，主要是用于 TLS 和 WebSocket 支持，使用 rustls 而非 native-tls。
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
 tokio-rustls = { version = "0.26", features = [
     "logging",
@@ -64,14 +74,15 @@ rustls-pki-types = "1.11"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
 tungstenite = { version = "0.26", features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
 
+# 这些依赖 ​​只在 macOS 和 Windows 上​​ 使用，使用 ​​native TLS（操作系统自带的 TLS）​​ 而不是 rustls。
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tokio-native-tls = "0.3"
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 tungstenite = { version = "0.26", features = ["native-tls"] }
-
+# 构建脚本依赖 用于在 ​​编译期生成 Rust 代码​​，通常与 protobuf配合使用，根据 .proto文件生成 Rust 结构体。
 [build-dependencies]
 protobuf-codegen = { version = "3.7" }
-
+# 平台特定的依赖 仅在 Windows 上引入，使用 winapi访问底层 Windows API，比如用户、同步、内存等。
 [target.'cfg(target_os = "windows")'.dependencies]
 winapi = { version = "0.3", features = [
     "winuser",
@@ -80,6 +91,6 @@ winapi = { version = "0.3", features = [
     "memoryapi",
     "sysinfoapi",
 ] }
-
+# 平台特定的依赖 仅在 macOS 上引入，osascript可能用于调用 macOS 的 AppleScript 执行系统命令。
 [target.'cfg(target_os = "macos")'.dependencies]
 osascript = "0.3"
