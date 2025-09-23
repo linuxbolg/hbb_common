@@ -19,6 +19,7 @@ use std::{
     },
 };
 
+
 // ==================== 第三方库导入 ====================
 use anyhow::Result;                   // 简化错误处理的 Result 类型
 use bytes::Bytes;                     // 高效字节缓冲区类型
@@ -29,6 +30,8 @@ use serde_derive::{Deserialize, Serialize}; // 派生宏：自动生成 Serializ
 use serde_json;                       // JSON 序列化/反序列化库
 use sodiumoxide::base64;              // libsodium 提供的 Base64 编解码
 use sodiumoxide::crypto::sign;        // 数字签名相关功能
+
+
 
 // ==================== 本地模块导入 ====================
 use crate::{
@@ -2770,7 +2773,7 @@ pub mod keys {
     pub const OPTION_ONE_WAY_CLIPBOARD_REDIRECTION: &str = "one-way-clipboard-redirection";
     pub const OPTION_ALLOW_LOGON_SCREEN_PASSWORD: &str = "allow-logon-screen-password";
     pub const OPTION_ONE_WAY_FILE_TRANSFER: &str = "one-way-file-transfer";
-    pub const OPTION_ALLOW_HTTPS_21114: &str = "allow-https-21114";
+    pub const OPTION_ALLOW_HTTPS_21114: &str = "allow-https-2114";
     pub const OPTION_ALLOW_HOSTNAME_AS_ID: &str = "allow-hostname-as-id";
     pub const OPTION_HIDE_POWERED_BY_ME: &str = "hide-powered-by-me";
     pub const OPTION_MAIN_WINDOW_ALWAYS_ON_TOP: &str = "main-window-always-on-top";
